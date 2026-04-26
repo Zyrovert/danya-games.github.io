@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Stickman: Boss Battle Final</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #222; font-family: 'Arial Black', sans-serif; touch-action: none; }
+        canvas { display: block; background: #fff; border-bottom: 8px solid #000; margin: 0 auto; }
+        .score { position: absolute; top: 20px; left: 20px; font-size: 24px; color: #fff; z-index: 10; background: #ff5252; padding: 5px 15px; border-radius: 8px; box-shadow: 4px 4px 0 #000; }
+        #menu { position: absolute; top:0; left:0; width:100%; height:100%; background: #fff; display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 100; text-align: center; }
+        button { padding: 20px 50px; margin: 10px; font-size: 24px; cursor: pointer; border: 4px solid #000; background: #ff5252; color: #fff; font-weight: bold; border-radius: 15px; transition: 0.2s; }
+        button:hover { transform: scale(1.1); background: #333; }
+        .authors { position: absolute; bottom: 20px; font-size: 14px; color: #777; font-family: sans-serif; }
+    </style>
+</head>
+<body>
+
+    <div id="menu">
+        <h1 style="font-size: 46px; color: #333; margin-bottom: 5px;">SUPER STICKMAN</h1>
+        <p style="color: #666; margin-bottom: 30px;">Одолей босса на 75 очках!</p>
+        <button onclick="startGame('story')">СЮЖЕТ</button>
+        <button onclick="startGame('endless')">БЕСКОНЕЧНЫЙ РАН</button>
+        <div class="authors">Авторы: Samvel Mnatsakanyan (Danya) & Gemini AI</div>
+    </div>
+
+    <div class="score">Счёт: <span id="res">0</span></div>
+    <canvas id="game"></canvas>
+
+    <script>
+        const canvas = document.getElementById('game');
+        const ctx = canvas.getContext('2d');
+        const menu = document.getElementById('menu');
+
+        canvas.width = window.innerWidth;
+        canvas.height = 400;
+
+        let score = 0;
+        let isGameOver = false;
+        let gameMode = 'story';
+        let gameSpeed = 7;
+        let audioCtx = null;
+        let gameStarted = false;
+        let isCutscene = false;
+
+        let player = { x: 80, y: 0, w: 30, h: 65, dy: 0, jump: -16, gravity: 0.8, grounded: false, catching: false };
+        let boss = { active: false, x: 0, y: 500, w: 110, h: 110, angle: 0, falling: false, targetX: canvas.width - 220 };
+        let hole = { x: -2000, w: 160, active: false };
+        let obstacles = [];
+        let nextSpawn = 0;
+
+        function playSfx(f, t, d, v) {
+            if (!audioCtx) return;
+            const o = audioCtx.createOscillator(); const g = audioCtx.createGain();
+            o.type = t; o.frequency.setValueAtTime(f, audioCtx.currentTime);
+            g.gain.setValueAtTime(v, audioCtx.currentTime);
+            g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + d);
+            o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime + d);
+        }
+
+        function startMusic() {
+            let step = 0;
+            setInterval(() => {
+                if (gameStarted && !isGameOver && !isCutscene) {
+                    playSfx(step % 4 === 0 ? 65 : 100, 'triangle', 0.2, 0.08);
+                    step++;
+                }
+            }, 250);
+        }
+
+        function drawEyes(x, y, r, isBoss) {
+            const gap = isBoss ? 50 : 15;
+            ctx.fillStyle = "white"; 
+            ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(x + gap, y, r, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = "black";
+            ctx.beginPath(); ctx.arc(x + 1, y, r/2, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(x + gap + 1, y, r/2, 0, Math.PI*2); ctx.fill();
+        }
+
+        function drawStickman(x, y) {
+            ctx.strokeStyle = "#000"; ctx.lineWidth = 4; ctx.lineCap = "round";
+            ctx.beginPath();
+            let t = Date.now() * 0.01;
+            ctx.arc(x + 15, y + 10, 8, 0, 7); 
+            ctx.moveTo(x + 15, y + 18); ctx.lineTo(x + 15, y + 42); 
+            let armS = player.grounded ? Math.sin(t) * 15 : -25;
+            if (player.catching) armS = -45;
+            ctx.moveTo(x + 15, y + 25); ctx.lineTo(x - 5, y + 25 + armS); 
+            ctx.moveTo(x + 15, y + 25); ctx.lineTo(x + 35, y + 25 - armS);
+            let legS = player.grounded ? Math.sin(t) * 20 : 10;
+            ctx.moveTo(x + 15, y + 42); ctx.lineTo(x + 15 - legS, y + 65);
+            ctx.moveTo(x + 15, y + 42); ctx.lineTo(x + 15 + legS, y + 65);
+            ctx.stroke();
+        }
+
+        function drawBoss() {
+            if (!boss.active && !boss.falling) return;
+            ctx.save();
+            ctx.translate(boss.x + boss.w/2, boss.y + boss.h/2);
+            ctx.rotate(boss.angle);
+            ctx.fillStyle = "#ff0000"; ctx.fillRect(-boss.w/2, -boss.h/2, boss.w, boss.h);
+            drawEyes(-25, -15, 12, true);
+
+            ctx.strokeStyle = "red"; ctx.lineWidth = 8;
+            let throwAnim = boss.active ? Math.sin(Date.now() * 0.006) * 40 : 0; 
+            ctx.beginPath(); ctx.moveTo(-55, 20); ctx.lineTo(-95 + throwAnim, 45); ctx.stroke(); // Рука 1
+            ctx.beginPath(); ctx.moveTo(55, 20); ctx.lineTo(95 - throwAnim, 45); ctx.stroke(); // Рука 2
+            
+            if (throwAnim < -25 && boss.active) { // Визуализация подготовки шипа
+                ctx.fillStyle = "red"; ctx.beginPath();
+                ctx.moveTo(-110+throwAnim, 35); ctx.lineTo(-90+throwAnim, 15); ctx.lineTo(-70+throwAnim, 35); ctx.fill();
+            }
+            ctx.restore();
+        }
+
+        function update() {
+            if (isGameOver || !gameStarted || isCutscene) return;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            ctx.fillStyle = "#333"; ctx.fillRect(0, 390, canvas.width, 10);
+            if (hole.active) { ctx.clearRect(hole.x, 385, hole.w, 20); hole.x -= gameSpeed; }
+
+            player.dy += player.gravity; player.y += player.dy;
+            if (player.y + player.h > 390) {
+                if (hole.active && player.x + player.w > hole.x && player.x < hole.x + hole.w) {
+                    if (player.y > 375) die("Ты упал!");
+                } else { player.y = 390 - player.h; player.dy = 0; player.grounded = true; }
+            }
+
+            drawStickman(player.x, player.y);
+            if (gameMode === 'story') drawBoss();
+
+            if (gameMode === 'story') {
+                if (score === 50 && !boss.active) { boss.active = true; hole.active = true; hole.x = canvas.width; boss.x = canvas.width + 100; }
+                if (boss.active && boss.x > boss.targetX) boss.x -= 3;
+                if (boss.active && boss.y > 100) boss.y -= 4;
+                if (score === 75) { runFinalScene(); return; }
+                if (score >= 100) win();
+            } else { gameSpeed = 7 + (score / 20); }
+
+            if (Date.now() > nextSpawn) {
+                let isN = Math.random() > 0.5;
+                obstacles.push({ 
+                    x: boss.active ? boss.x : canvas.width, 
+                    y: isN ? 280 : 350, 
+                    w: isN ? 50 : 35, h: isN ? 20 : 40, type: isN ? 'n' : 's',
+                    spd: boss.active ? gameSpeed + 1.5 : gameSpeed // Шипы босса чуть быстрее, но не "пулемет"
+                });
+                // Задержка бросков босса больше, чтобы игрок успевал
+                nextSpawn = Date.now() + (boss.active ? 1300 : 1100) + Math.random() * 700;
+            }
+
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                let o = obstacles[i]; o.x -= o.spd;
+                ctx.fillStyle = "#ff0000";
+                if (o.type === 's') {
+                    ctx.beginPath(); ctx.moveTo(o.x, o.y+o.h); ctx.lineTo(o.x+o.w/2, o.y); ctx.lineTo(o.x+o.w, o.y+o.h); ctx.fill();
+                    drawEyes(o.x+8, o.y+20, 5, false);
+                } else {
+                    ctx.beginPath(); ctx.moveTo(o.x, o.y+10); ctx.lineTo(o.x+50, o.y); ctx.lineTo(o.x+50, o.y+20); ctx.fill();
+                    drawEyes(o.x+28, o.y+10, 4, false);
+                }
+                if (player.x+10 < o.x+o.w && player.x+player.w-10 > o.x && player.y+5 < o.y+o.h && player.y+player.h-5 > o.y) die("Гейм Овер!");
+                if (o.x < -100) { obstacles.splice(i, 1); score++; document.getElementById('res').innerText = score; }
+            }
+            requestAnimationFrame(update);
+        }
+
+        function runFinalScene() {
+            isCutscene = true; player.catching = true;
+            let sx = player.x + 40; let sy = 350;
+            let anim = setInterval(() => {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                drawStickman(player.x, player.y); drawBoss();
+                ctx.fillStyle = "red"; ctx.fillRect(sx, sy, 35, 35);
+                sx += 18; sy -= 6;
+                if (sx > boss.x + 20) {
+                    clearInterval(anim); boss.active = false; boss.falling = true;
+                    playSfx(50, 'sawtooth', 1.2, 0.4);
+                    let fall = setInterval(() => {
+                        ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        boss.y += 6; boss.x += Math.sin(Date.now()*0.1)*12; boss.angle += 0.2;
+                        drawStickman(player.x, player.y); drawBoss();
+                        if (boss.y > 500) { clearInterval(fall); player.catching = false; setTimeout(() => { isCutscene = false; score++; update(); }, 5000); }
+                    }, 30);
+                }
+            }, 30);
+        }
+
+        function startGame(m) { 
+            gameMode = m; menu.style.display = 'none'; gameStarted = true; 
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)(); 
+            startMusic(); update(); 
+        }
+        function die(t) { isGameOver = true; alert(t + " Счёт: " + score); location.reload(); }
+        function win() { isGameOver = true; alert("ТЫ ГЕРОЙ! БОСС ПОВЕРЖЕН!"); location.reload(); }
+
+        window.addEventListener('keydown', (e) => { if(e.code==='Space' && player.grounded) {player.dy=player.jump; player.grounded=false; playSfx(400,'sine',0.1,0.1);}});
+        window.addEventListener('touchstart', (e) => { e.preventDefault(); if(player.grounded) {player.dy=player.jump; player.grounded=false; playSfx(400,'sine',0.1,0.1);}});
+    </script>
+</body>
+</html>
